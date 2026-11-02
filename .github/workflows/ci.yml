@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"  # matches the Dockerfile and the lockfile target
+      - name: Install locked runtime dependencies
+        run: pip install --require-hashes --no-deps -r requirements.txt
+      - name: Install test runner
+        run: pip install "pytest>=8,<9"
+      - name: Run tests
+        run: python -m pytest -v
+
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker buildx build --load -t claude-orchestrator-mcp:ci .
+      - name: Smoke test MCP initialize over stdio
+        run: |
+          echo '{}' > /tmp/config.json
+          chmod 644 /tmp/config.json
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            | timeout 30 docker run --rm -i --read-only \
+                -v /tmp/config.json:/etc/orchestrator/config.json:ro \
+                claude-orchestrator-mcp:ci > /tmp/out.json || true
+          cat /tmp/out.json
+          grep -q '"serverInfo"' /tmp/out.json
