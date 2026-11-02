@@ -6,7 +6,7 @@ import asyncio, importlib.util, io, json, logging, os, ssl, stat, subprocess, sy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-SERVER = Path(__file__).resolve().parent.parent / "orchestrator-mcp-server.py"
+ROOT = Path(__file__).resolve().parent.parent
 OUT = Path(tempfile.mkdtemp(prefix="orch-test-"))
 
 
@@ -27,12 +27,12 @@ def make_test_pki(d: Path) -> Path:
 
 
 PKI = make_test_pki(OUT / "pki")
-spec = importlib.util.spec_from_file_location("orch", SERVER)
-orch = importlib.util.module_from_spec(spec); sys.modules["orch"] = orch; spec.loader.exec_module(orch)
+sys.path.insert(0, str(ROOT))
+import orchestrator as orch  # noqa: E402
 
 # capture stderr logs to scan for leaks
 LOGBUF = io.StringIO()
-h = logging.StreamHandler(LOGBUF); h.setFormatter(orch._JsonFormatter()); logging.getLogger().addHandler(h)
+h = logging.StreamHandler(LOGBUF); h.setFormatter(orch.JsonFormatter()); logging.getLogger().addHandler(h)
 
 RESULTS, FAILS = [], []
 def check(name, cond, info=""):
@@ -87,7 +87,7 @@ def make(cfg_extra=None, m5_port=18443, m970_port=18444, client_cert=True, cloud
     with um.patch.dict(sys.modules, {"anthropic": um.MagicMock()}):
         o = orch.Orchestrator(conf, key)
     rec = CloudRecorder()
-    if cloud: o.engine.anthropic = rec
+    if cloud: o.providers[orch.ModelProvider.CLAUDE_API].client = rec
     return o, rec
 
 AUDIT = OUT / "audit.jsonl"
@@ -214,6 +214,17 @@ async def main():
     r = await o.call("execute_task", {"task": "internal infrastructure notes"})
     check("T11 without client cert M5 rejects; no cloud fallback", r["status"] == "error" and rec.sent == [], json.dumps(r))
 
+    # T11b unreachable local nodes are skipped during the cooldown, and still never fall back to cloud
+    o, rec = make(m5_port=18999)
+    first = await o.call("execute_task", {"task": "internal infrastructure notes"})
+    t0 = time.monotonic()
+    second = await o.call("execute_task", {"task": "internal infrastructure notes"})
+    dt = time.monotonic() - t0
+    skipped = AUDIT.read_text().count('"event": "provider_skipped"')
+    check("T11b cooldown: down nodes skipped fast, HIGH task still fails closed",
+          first.get("code") == second.get("code") == "UPSTREAM_FAILURE" and rec.sent == [] and skipped >= 2 and dt < 0.5,
+          f"{first.get('code')} {second.get('code')} skipped={skipped} dt={dt:.3f}s")
+
     # T12 rate limit
     o, _ = make({"limits": {"rate_per_minute": 5}})
     codes = [(await o.call("route_task", {"task": "hello"})).get("status") for _ in range(7)]
@@ -242,7 +253,7 @@ async def main():
     tampered = lines[:]; rec5 = json.loads(tampered[5]); rec5["executed_on"] = "local_m5"; tampered[5] = json.dumps(rec5, sort_keys=True, ensure_ascii=False)
     broken = [i for i, (p, c) in enumerate(zip(tampered, tampered[1:])) if json.loads(c)["prev"] != hashlib.sha256(p.encode()).hexdigest()]
     check("T14b editing one record breaks the chain", broken == [5], f"break detected at {broken}")
-    verifier = SERVER.parent / "tools/verify-audit.py"
+    verifier = ROOT / "tools/verify-audit.py"
     forged = OUT / "forged.jsonl"; forged.write_text(AUDIT.read_text() + json.dumps({"event": "decision", "prev": "genesis"}) + "\n")
     rc_ok = subprocess.run([sys.executable, verifier, AUDIT], capture_output=True).returncode
     rc_forged = subprocess.run([sys.executable, verifier, forged], capture_output=True).returncode
@@ -255,7 +266,7 @@ async def main():
     from mcp.client.stdio import stdio_client
     cfgf = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
     json.dump({"audit_log_file": str(Path(tempfile.mkdtemp()) / "a.jsonl")}, cfgf); cfgf.close()
-    params = StdioServerParameters(command=sys.executable, args=[str(SERVER), "--config", cfgf.name],
+    params = StdioServerParameters(command=sys.executable, args=["-m", "orchestrator", "--config", cfgf.name], cwd=str(ROOT),
                                    env={"PATH": os.environ["PATH"], "ORCH_SECRETS_DIR": "/nonexistent"})
     async with stdio_client(params) as (rd, wr):
         async with ClientSession(rd, wr) as sess:

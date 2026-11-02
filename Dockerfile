@@ -23,9 +23,10 @@ RUN groupadd --system --gid 10001 orch \
  && install -d -o orch -g orch -m 0700 /var/log/claude-orchestrator \
  && install -d -o orch -g orch -m 0700 /work
 COPY --from=build /opt/venv /opt/venv
-COPY --chown=root:root --chmod=0444 orchestrator-mcp-server.py /app/orchestrator-mcp-server.py
+# 0555, not 0444: --chmod also applies to the directory, which needs +x to be traversed.
+COPY --chown=root:root --chmod=0555 orchestrator /app/orchestrator
 USER 10001:10001
 WORKDIR /app
 # stdio transport: there is no HTTP endpoint to probe.
 HEALTHCHECK NONE
-ENTRYPOINT ["python", "/app/orchestrator-mcp-server.py", "--config", "/etc/orchestrator/config.json"]
+ENTRYPOINT ["python", "-m", "orchestrator", "--config", "/etc/orchestrator/config.json"]

@@ -37,8 +37,10 @@ with open(a.path, "rb") as f:
             stats["error:" + rec.get("code", "?")] += 1
             if rec.get("code") == "POLICY_VIOLATION":
                 alerts.append(f"line {i}: privacy-downgrade attempt ({rec.get('detail', '')})")
+        # Records written before 'executed_local' existed fall back to the provider names.
+        local = rec.get("executed_local", rec.get("executed_on") in ("local_m5", "local_m970"))
         if ev == "decision" and rec.get("privacy_level") in ("high", "critical") and \
-                rec.get("executed_on") not in (None, "local_m5", "local_m970"):
+                rec.get("executed_on") is not None and local is not True:
             alerts.append(f"line {i}: {rec['privacy_level']} task executed on {rec['executed_on']} — INVARIANT I1 BROKEN")
         if ev == "startup":
             stats["key_fp:" + str(rec.get("anthropic_key_fp"))] += 1
