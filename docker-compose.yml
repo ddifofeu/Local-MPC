@@ -1,0 +1,70 @@
+# Orchestrator — hardened compose file.
+#
+# The server speaks MCP over stdio. Claude Code starts it on demand:
+#   docker compose -f /path/to/Local-MPC/docker-compose.yml run --rm -T orchestrator-mcp
+# No port is published: nothing listens on the network, so there is nothing to
+# scan, brute-force or DoS from the LAN or the Internet.
+#
+# Inference nodes (M970 / M5) are NOT defined here: they run their own compose
+# file (deploy/inference-node/) behind an mTLS gateway on each machine.
+
+services:
+  orchestrator-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: claude-orchestrator-mcp:hardened
+    stdin_open: true
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    ulimits:
+      core: 0          # no core dumps => no API key in a crash file
+    mem_limit: 1g
+    cpus: 2
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    environment:
+      LOG_LEVEL: INFO
+      ORCH_SECRETS_DIR: /run/secrets
+    secrets:
+      - anthropic_api_key
+      - orch_ca_crt
+      - orch_client_crt
+      - orch_client_key
+    volumes:
+      - ./config.json:/etc/orchestrator/config.json:ro
+      - orchestrator-audit:/var/log/claude-orchestrator
+      - ${ORCH_WORKDIR:-./workdir}:/work
+    # mTLS gateways enforce SNI == Host: address them by name, never by bare IP.
+    extra_hosts:
+      - "m5.lan:${M5_IP:?set M5_IP to the M5 LAN address}"
+      - "m970.lan:${M970_IP:?set M970_IP to the M970 LAN address}"
+    networks: [egress]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+# File-based secrets are bind-mounted with the host file's owner and mode.
+# Host side:  chown 10001:10001 <file> && chmod 0400 <file>
+secrets:
+  anthropic_api_key:
+    file: /etc/claude-orchestrator/secrets/anthropic_api_key
+  orch_ca_crt:
+    file: /etc/claude-orchestrator/pki/ca.crt
+  orch_client_crt:
+    file: /etc/claude-orchestrator/pki/orchestrator.crt
+  orch_client_key:
+    file: /etc/claude-orchestrator/pki/orchestrator.key
+
+volumes:
+  orchestrator-audit:
+
+networks:
+  egress:
+    driver: bridge

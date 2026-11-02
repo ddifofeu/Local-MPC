@@ -1,0 +1,49 @@
+# Runs on EACH inference machine (M5 and M970).
+#
+#   Ollama  : on an internal-only Docker network. No published port, no egress.
+#   gateway : Caddy terminates TLS, REQUIRES a client certificate signed by the
+#             private CA (mTLS), and forwards only /api/generate, /api/chat and
+#             /api/version. /api/pull, /api/push, /api/delete, /api/create... => 403.
+#
+# Start:  NODE_LAN_IP=<this node LAN IP> OLLAMA_VERSION=<exact tag> docker compose up -d
+# Pull a model (maintenance window only — ollama has no Internet otherwise):
+#   docker network connect bridge ollama && docker exec ollama ollama pull <model> \
+#     && docker network disconnect bridge ollama
+
+services:
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:?pin an explicit Ollama version tag or digest}
+    container_name: ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434   # reachable only on the internal network below
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: [internal]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    # GPU/NPU passthrough for Strix Halo goes here (devices: /dev/kfd, /dev/dri)
+
+  gateway:
+    image: caddy:2-alpine   # pin by digest for production
+    container_name: ollama-gateway
+    ports:
+      - "${NODE_LAN_IP:?set the LAN IP of this node}:8443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./pki:/etc/caddy/pki:ro
+    networks: [internal, lan]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/config", "/data"]
+
+volumes:
+  ollama-data:
+
+networks:
+  internal:
+    internal: true    # no route to the LAN or the Internet
+  lan:
+    driver: bridge

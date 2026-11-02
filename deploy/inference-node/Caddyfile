@@ -1,0 +1,48 @@
+{
+	admin off
+	auto_https off
+	servers {
+		protocols h1 h2
+	}
+}
+
+# client_auth turns on strict SNI/Host matching: clients must connect by hostname
+# (https://m5.lan:8443), not by IP — a bare-IP request gets HTTP 421.
+https://:8443 {
+	tls /etc/caddy/pki/server.crt /etc/caddy/pki/server.key {
+		protocols tls1.3
+		client_auth {
+			mode require_and_verify
+			trust_pool file /etc/caddy/pki/ca.crt
+		}
+	}
+
+	request_body {
+		max_size 2MB
+	}
+
+	@inference {
+		method POST
+		path /api/generate /api/chat
+	}
+	@version {
+		method GET
+		path /api/version
+	}
+
+	handle @inference {
+		reverse_proxy ollama:11434
+	}
+	handle @version {
+		reverse_proxy ollama:11434
+	}
+	# Everything else (pull, push, delete, create, copy, tags, ps...) is refused.
+	handle {
+		respond 403
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Instance config and data mounted by docker-compose.yml
+/config.json
+/workdir/
+
+# Never commit key material or secrets
+*.key
+*.pem
+*.srl
+secrets/
+
+.claude/settings.local.json

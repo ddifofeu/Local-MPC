@@ -1,0 +1,38 @@
+{
+  "anthropic_model": "claude-sonnet-5-5",
+  "privacy_floor": "low",
+  "high_allows_cloud_fallback": false,
+  "local_endpoints": {
+    "local_m5": {
+      "base_url": "https://m5.lan:8443",
+      "model": "REPLACE-with-model-tag-served-by-M5",
+      "ca_file": "/run/secrets/orch_ca_crt",
+      "client_cert": "/run/secrets/orch_client_crt",
+      "client_key": "/run/secrets/orch_client_key"
+    },
+    "local_m970": {
+      "base_url": "https://m970.lan:8443",
+      "model": "REPLACE-with-model-tag-served-by-M970",
+      "ca_file": "/run/secrets/orch_ca_crt",
+      "client_cert": "/run/secrets/orch_client_crt",
+      "client_key": "/run/secrets/orch_client_key"
+    }
+  },
+  "privacy_keywords": {
+    "critical": [],
+    "high": [],
+    "medium": []
+  },
+  "limits": {
+    "max_task_chars": 200000,
+    "max_response_chars": 400000,
+    "max_output_tokens": 4096,
+    "max_concurrency": 4,
+    "rate_per_minute": 30,
+    "cloud_calls_per_process": 500,
+    "request_timeout_s": 120,
+    "history_size": 200
+  },
+  "audit_log_file": "/var/log/claude-orchestrator/audit.jsonl",
+  "workdir": "/work"
+}

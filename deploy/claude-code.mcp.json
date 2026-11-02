@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "orchestrator": {
+      "command": "docker",
+      "args": [
+        "compose",
+        "-f",
+        "/path/to/Local-MPC/docker-compose.yml",
+        "run",
+        "--rm",
+        "-T",
+        "orchestrator-mcp"
+      ]
+    }
+  }
+}
