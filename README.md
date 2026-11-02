@@ -26,8 +26,9 @@ ordinary coding words trip it: `classname` (contains `ssn`), `tokenizer` (`token
 (`health`). Those tasks go to a local model, or fail with `NO_ROUTE` if none is up. Use
 `route_task` to see why a task was classified the way it was.
 
-Only the Anthropic API and the local endpoints are implemented. OpenAI and Gemini appear in the
-routing tables but are never selected, because there is no client for them.
+If a local node can't be reached, it is skipped for `provider_cooldown_s` (default 30 s) so later
+calls don't each wait for the connect timeout. Only connection failures trigger this; HTTP errors
+don't. The cooldown is per process, and Claude Code starts one process per session.
 
 ## MCP tools
 
@@ -38,9 +39,8 @@ routing tables but are never selected, because there is no client for them.
 | `get_routing_history(limit=10)` | Recent decisions (metadata and hashes only, never task text) |
 | `check_resources()` | Health of the local inference endpoints |
 
-Useful `override` values are `@local` / `@private` (local only), `@claude`, `@cheap` (local first)
+`override` is one of `@local` / `@private` (local only), `@claude`, `@cheap` (local first)
 and `@fast` (lowest estimated latency). `@claude` is refused for `high` / `critical` tasks.
-`@openai` and `@gemini` are accepted but have no effect, since those providers are not implemented.
 
 For sensitive material, use `input_file` / `output_file` (paths inside the configured `workdir`).
 The content is then read and written by the server and never passes through the calling model's
@@ -49,7 +49,15 @@ context.
 ## Layout
 
 ```
-orchestrator-mcp-server.py   the server (single file)
+orchestrator/                the server package (run with `python -m orchestrator`)
+  models.py                  privacy levels, task types, provider ids
+  privacy.py                 content detectors, keyword classifier, task classifier
+  routing.py                 routing tables and the cloud/local policy
+  providers.py               Anthropic and Ollama (mTLS) backends
+  core.py                    validation, limits, execution chain, history, error boundary
+  config.py / secret.py      non-secret config / secret-file loading
+  audit.py / log.py          hash-chained audit trail / stderr-only JSON logging
+  server.py                  MCP stdio tools
 config.template.json         copy to ./config.json
 docker-compose.yml           orchestrator container (no listening port)
 Dockerfile                   non-root, read-only, hash-pinned dependencies
@@ -61,7 +69,8 @@ deploy/
 tools/
   verify-audit.py            verify the audit log hash chain and flag policy alerts
   rotate-anthropic-key.sh    zero-downtime API key rotation
-tests/test_orchestrator.py   regression suite for the security invariants
+tests/                       pytest suite, grouped by security invariant
+.github/workflows/ci.yml     tests against the hash-locked deps + image build and smoke test
 ```
 
 ## Setup
@@ -78,8 +87,11 @@ tests/test_orchestrator.py   regression suite for the security invariants
    `api_keys`) and are only read from environment variables when `ORCH_ALLOW_ENV_SECRETS=1`.
 4. **Config:** `cp config.template.json config.json` and set the model tags served by each node.
    Unknown limits, non-positive limits and malformed keyword lists are rejected at startup.
-5. **Claude Code:** add the contents of `deploy/claude-code.mcp.json` to your MCP config. Claude Code
-   starts the container on demand with `docker compose run --rm -T orchestrator-mcp`.
+5. **Node addresses:** export `M5_IP` and `M970_IP` (the LAN addresses of the nodes). The compose
+   file maps them to `m5.lan` / `m970.lan` and refuses to start without them.
+6. **Claude Code:** add the contents of `deploy/claude-code.mcp.json` to your MCP config, replacing
+   `/path/to/Local-MPC` with your checkout. Claude Code starts the container on demand with
+   `docker compose run --rm -T orchestrator-mcp`. Building the image needs BuildKit (`docker buildx`).
 
 Without an Anthropic key the server runs local-only. Without local endpoints, `low` / `medium`
 tasks go to Claude and everything else returns `NO_ROUTE`.
@@ -90,7 +102,7 @@ Every decision, error and startup is appended to `audit_log_file` as hash-chaine
 prompt or response text. Check it with:
 
 ```bash
-python3 tools/verify-audit.py /var/log/claude-orchestrator/audit.jsonl [--since 2026-10-01]
+python3 tools/verify-audit.py /var/log/claude-orchestrator/audit.jsonl [--since YYYY-MM-DD]
 ```
 
 Exit code 2 means the chain is broken: a record was edited, removed or inserted. The chain is
@@ -99,10 +111,13 @@ unkeyed, so it detects accidental or naive tampering, not an attacker who can re
 ## Tests
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install "mcp>=1.27,<2" "httpx>=0.28,<0.29"
-.venv/bin/python tests/test_orchestrator.py
+python3.11 -m venv .venv
+.venv/bin/pip install --require-hashes --no-deps -r requirements.txt
+.venv/bin/pip install "pytest>=8,<9"
+.venv/bin/python -m pytest
 ```
 
-The suite needs `openssl` on the PATH (it generates a throwaway test PKI), starts a fake Ollama
-server over mTLS on port 18443, and runs the server end to end over MCP stdio. It exits non-zero
-if any check fails.
+The suite needs `openssl` on the PATH: it generates a throwaway test PKI, runs a fake Ollama server
+behind mTLS on an ephemeral port, and drives the real server end to end over MCP stdio. The Anthropic
+client is replaced by a recorder, so no real API calls are made and every policy test can assert
+exactly what would have left the machine.

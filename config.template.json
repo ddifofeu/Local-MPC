@@ -31,7 +31,8 @@
     "rate_per_minute": 30,
     "cloud_calls_per_process": 500,
     "request_timeout_s": 120,
-    "history_size": 200
+    "history_size": 200,
+    "provider_cooldown_s": 30
   },
   "audit_log_file": "/var/log/claude-orchestrator/audit.jsonl",
   "workdir": "/work"
