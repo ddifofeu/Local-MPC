@@ -1,0 +1,11 @@
+# Runtime dependencies live in requirements.in -> requirements.txt (hash-locked), not here.
+[project]
+name = "claude-orchestrator-mcp"
+version = "0.2.0"
+description = "Privacy-aware MCP router between the Anthropic API and local inference nodes"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
