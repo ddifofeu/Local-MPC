@@ -1,9 +1,9 @@
-# Local-MPC: a privacy-aware MCP router
+# privacy-mcp-router
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets Claude Code send
+A privacy-aware [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets Claude Code send
 each task either to the Anthropic API or to Ollama models on your own machines, under a written
-routing policy enforced in code. The repository name says "MPC", but this is an **MCP** server. It
-has nothing to do with multiparty computation.
+routing policy enforced in code. The project was previously called Local-MPC; it is an **MCP** server
+and has nothing to do with multiparty computation.
 
 It is for someone who already runs local inference nodes and wants the choice of "cloud or local"
 made by a policy with tests and an audit trail, not remembered task by task.
@@ -24,10 +24,10 @@ An early personal project, at version 0.2.0.
 | | |
 |---|---|
 | **Works today** | Classification, routing, policy enforcement, file-based execution, audit log and its verifier, all exercised through the test suite, including end to end over MCP stdio |
-| **Test evidence** | 62 tests passed on 2026-11-06 at commit `71832f3` (Python 3.12.3, Linux). [CI run](https://github.com/ddifofeu/Local-MPC/actions/runs/41547374944) for the same commit: tests on Python 3.11, image build, MCP `initialize` smoke test |
+| **Test evidence** | 68 tests passed on 2026-11-06 (Python 3.12.3, Linux). CI runs the tests on Python 3.11, builds the image and smoke-tests MCP `initialize`; see the [Actions tab](https://github.com/ddifofeu/privacy-mcp-router/actions) |
 | **Test scope** | The local node is a fake Ollama server behind real mTLS on an ephemeral port. The Anthropic client is replaced by a recorder, so policy tests assert exactly what would have left the machine |
 | **Not covered by tests** | The shipped Caddy gateway, `firewall.sh`, the full `docker-compose.yml` restrictions, real Ollama nodes, and real Anthropic API calls |
-| **Not available** | A written threat model or independent security review. The design invariants are listed in [`orchestrator/__init__.py`](orchestrator/__init__.py), and most test files name those they cover. The repository records no real deployment, load test or production use |
+| **Not yet done** | It has not been run against real inference nodes or the real Anthropic API, and there has been no load test or independent security review. The [threat model](docs/THREAT-MODEL.md) is my own analysis. The design invariants are listed in [`orchestrator/__init__.py`](orchestrator/__init__.py) |
 
 ## How a request flows
 
@@ -179,9 +179,9 @@ model. This holds only under these conditions:
 | Area | What is in place | Limit |
 |---|---|---|
 | **Transport** | Local endpoints must be `https://`. Private CA via `ca_file`, client certificate, proxies ignored, redirects not followed | The orchestrator treats the client certificate as optional. The shipped gateway is what requires it, so a deployment without that gateway may not have mTLS |
-| **Inference nodes** | [Caddy gateway](deploy/inference-node/Caddyfile) with TLS 1.3 and required client certificates. Only inference routes and `/api/version` are forwarded. Ollama sits on an internal network with no published port. [`firewall.sh`](deploy/inference-node/firewall.sh) limits the gateway to the orchestrator's address | Not exercised by the tests. The gateway image tag isn't pinned by digest |
+| **Inference nodes** | [Caddy gateway](deploy/inference-node/Caddyfile) with TLS 1.3 and required client certificates. Only inference routes and `/api/version` are forwarded. Ollama sits on an internal network with no published port. [`firewall.sh`](deploy/inference-node/firewall.sh) limits the gateway to the orchestrator's address | Not exercised by the tests. The gateway image is pinned by digest, so updates are manual |
 | **API key** | Read from secret files, which are refused if group- or world-readable. `api_keys` in config stops startup. Environment variables are ignored and scrubbed unless `ORCH_ALLOW_ENV_SECRETS=1`. Redacted `repr`, no serialisation. [Rotation script](tools/rotate-anthropic-key.sh) | Environment mode is a development convenience. The client TLS key doesn't get the same mode check |
-| **Container** | [Compose file](docker-compose.yml): non-root, read-only root filesystem, all capabilities dropped, `no-new-privileges`, PID/memory/CPU limits, no core dumps, no published port. Python dependencies installed with `--require-hashes` | The base image isn't pinned by digest unless you pass one. The network is a plain bridge, so **outbound traffic isn't restricted to the nodes and Anthropic** |
+| **Container** | [Compose file](docker-compose.yml): non-root, read-only root filesystem, all capabilities dropped, `no-new-privileges`, PID/memory/CPU limits, no core dumps, no published port. Python dependencies installed with `--require-hashes` | The base image is pinned by digest, so updates are manual. The network is a plain bridge, so **outbound traffic isn't restricted to the nodes and Anthropic** |
 | **Inputs** | Type and size checks, rate limit, concurrency limit, per-process cloud budget, paths confined to `workdir` | Limits are per process |
 | **Logs and history** | Audit log and `get_routing_history` hold metadata, not prompt or response text ([`tests/test_audit.py`](tests/test_audit.py)) | See below for what metadata can reveal |
 
@@ -194,25 +194,34 @@ prompt or response text. Check it with:
 python3 tools/verify-audit.py /var/log/claude-orchestrator/audit.jsonl [--since YYYY-MM-DD]
 ```
 
-Exit code 2 means the chain is broken. The tool also prints policy alerts, such as a refused
+Exit code 2 means the chain is broken, the log doesn't match its anchor, or the server recorded such
+a mismatch at startup. The tool also prints policy alerts, such as a refused
 downgrade, or a `high` or `critical` task recorded as run in the cloud (expected if you enabled
 `high_allows_cloud_fallback`).
 
-The behaviour below was checked on 2026-11-06 at commit `71832f3`:
+A hash chain alone can't show that records were cut from the end, so after each append the server
+also writes the log's size and last hash to `audit.jsonl.anchor`. Each append takes a file lock and
+chains from the file itself, so concurrent Claude Code sessions can share one log.
 
-| Change to the log | `verify-audit.py` |
+| Change to the log | Result |
 |---|---|
 | Record edited, removed from the start or middle, or forged line appended | Chain broken (exit 2) |
-| **Records removed from the end** | **Not detected**, including after the server restarts on the shortened file |
-| **Two server processes writing at once** | **Reports a broken chain with no tampering**, because each process tracks its own previous hash. Concurrent Claude Code sessions sharing the audit volume will do this |
+| Records removed from the end | Anchor mismatch (exit 2) |
+| Anchor deleted | Exit 2 |
+| Server restarted on a shortened log | `audit_anchor_mismatch` is written to the log, so the event stays on record |
+| Sessions writing at once | Single valid chain |
 
-The chain is unkeyed, so it detects accidental or naive tampering, not an attacker who can rewrite
-the whole file.
+The chain and anchor are unkeyed and live side by side, so they detect accidental or naive tampering,
+not an attacker who can rewrite the whole file and its anchor. Copying the anchor somewhere the
+server's host can't alter would raise that bar. Use `--since` after you have reviewed an old mismatch.
 
 Metadata can still reveal something. `privacy_reasons` records the keyword that matched, so a
 sensitive custom keyword such as a project name appears in the log and in MCP responses. Task hashes
 are unsalted SHA-256 prefixes, so anyone with the log can confirm a guess at a short or predictable
 task.
+
+The [threat model](docs/THREAT-MODEL.md) sets these limits out by threat, including the gaps accepted
+for now.
 
 ## Design decisions and tradeoffs
 
@@ -264,7 +273,7 @@ file requires both addresses. To try the policy without any of that, run the [te
    maps them to `m5.lan` and `m970.lan` and refuses to start without them. For file-based execution,
    set `ORCH_WORKDIR` to the host directory mounted as `/work`.
 6. **Claude Code:** add the contents of `deploy/claude-code.mcp.json` to your MCP config, replacing
-   `/path/to/Local-MPC` with your checkout. Claude Code starts the container on demand with
+   `/path/to/privacy-mcp-router` with your checkout. Claude Code starts the container on demand with
    `docker compose run --rm -T orchestrator-mcp`.
 
 ## Layout
@@ -290,6 +299,8 @@ deploy/
 tools/
   verify-audit.py            verify the audit log hash chain and flag policy alerts
   rotate-anthropic-key.sh    API key rotation
+  tracker.py                 bug and change tracker (entries in tracker/)
+docs/THREAT-MODEL.md         assets, trust boundaries, threats, controls and accepted gaps
 tests/                       pytest suite, grouped by security invariant
 .github/workflows/ci.yml     tests against the hash-locked deps + image build and smoke test
 ```
@@ -307,8 +318,9 @@ The suite needs `openssl` on the PATH: it generates a throwaway test PKI, runs a
 behind mTLS on an ephemeral port, and drives the real server end to end over MCP stdio. Policy tests
 are in [`tests/test_policy.py`](tests/test_policy.py), classification probes in
 [`tests/test_privacy.py`](tests/test_privacy.py), and audit tests in
-[`tests/test_audit.py`](tests/test_audit.py).
+[`tests/test_audit.py`](tests/test_audit.py). `git config core.hooksPath .githooks` runs the tracker
+check and the tests before every commit.
 
 ## Licence
 
-The repository doesn't currently include a licence file.
+MIT, see [`LICENSE`](LICENSE).
