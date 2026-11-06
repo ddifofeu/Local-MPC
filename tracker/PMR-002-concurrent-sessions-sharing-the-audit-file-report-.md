@@ -4,7 +4,7 @@ status: fixed
 reported: 2026-11-06, claude
 blocker: -
 test: tests/test_audit.py::test_two_open_writers_keep_one_chain; tests/test_audit.py::test_concurrent_processes_keep_one_chain
-fixed-in: pending
+fixed-in: 8344848
 
 ## History
 - 2026-11-06 open: found by Claude in a README accuracy review
