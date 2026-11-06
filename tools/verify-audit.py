@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Verify the hash chain of the orchestrator audit log and print a security summary.
 
-Exit code 0 = chain intact, 2 = chain broken (record edited, deleted or inserted).
+Exit code 0 = intact, 2 = chain broken (record edited, deleted or inserted), the log does not match
+its .anchor file (records cut from the end, or the anchor removed), or the server recorded such a
+mismatch at startup. Records older than --since do not count towards that last case.
 Usage: verify-audit.py /var/log/claude-orchestrator/audit.jsonl [--since YYYY-MM-DD]
 """
 import argparse
@@ -19,6 +21,7 @@ prev_line = None
 breaks, n = [], 0
 stats = collections.Counter()
 alerts = []
+mismatches = []
 with open(a.path, "rb") as f:
     for i, raw in enumerate(f, 1):
         line = raw.rstrip(b"\n")
@@ -33,6 +36,9 @@ with open(a.path, "rb") as f:
             continue
         ev = rec.get("event")
         stats[ev] += 1
+        if ev == "audit_anchor_mismatch":
+            mismatches.append(i)
+            alerts.append(f"line {i}: log did not match its anchor at startup ({rec.get('problem', '')})")
         if ev == "error":
             stats["error:" + rec.get("code", "?")] += 1
             if rec.get("code") == "POLICY_VIOLATION":
@@ -46,11 +52,35 @@ with open(a.path, "rb") as f:
             stats["key_fp:" + str(rec.get("anthropic_key_fp"))] += 1
 
 print(f"records: {n}")
+
+def anchor_problem():
+    try:
+        with open(f"{a.path}.anchor", encoding="utf-8") as f:
+            anchor = json.load(f)
+        size, expected = int(anchor["size"]), anchor["sha256"]
+    except FileNotFoundError:
+        return "anchor missing" if n else None
+    except (ValueError, KeyError, TypeError):
+        return "anchor unreadable"
+    with open(a.path, "rb") as f:
+        head = f.read(size)
+    if len(head) < size:
+        return "log is shorter than its anchor: records were removed from the end"
+    last = head.rstrip(b"\n").rsplit(b"\n", 1)[-1]
+    if size and (not head.endswith(b"\n") or hashlib.sha256(last).hexdigest() != expected):
+        return "log differs from its anchor"
+    return None
+
+
+anchor = anchor_problem()
 for k, v in sorted(stats.items()):
     print(f"  {k:40s} {v}")
 for al in alerts:
     print("ALERT", al)
 if breaks:
     print(f"CHAIN BROKEN at lines {breaks[:20]}", file=sys.stderr)
+if anchor:
+    print(f"ANCHOR: {anchor}", file=sys.stderr)
+if breaks or anchor or mismatches:
     sys.exit(2)
 print("chain: OK")
