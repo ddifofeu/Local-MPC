@@ -1,7 +1,7 @@
 # Orchestrator — hardened compose file.
 #
 # The server speaks MCP over stdio. Claude Code starts it on demand:
-#   docker compose -f /path/to/Local-MPC/docker-compose.yml run --rm -T orchestrator-mcp
+#   docker compose -f /path/to/privacy-mcp-router/docker-compose.yml run --rm -T orchestrator-mcp
 # No port is published: nothing listens on the network, so there is nothing to
 # scan, brute-force or DoS from the LAN or the Internet.
 #

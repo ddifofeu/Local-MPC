@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 #
 # Hardened image for the orchestrator (stdio MCP server — no listening port).
-# Pin the base image by digest before building for real:
+# The base image is pinned by digest, so security updates arrive only when this line changes.
+# To update it:
 #   docker buildx imagetools inspect python:3.11-slim-bookworm --format '{{json .Manifest.Digest}}'
-#   docker build --build-arg PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:<digest> .
-ARG PYTHON_IMAGE=python:3.11-slim-bookworm
+ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39
 
 # ---------- build stage: resolve wheels with hash verification -------------
 FROM ${PYTHON_IMAGE} AS build

@@ -5,7 +5,7 @@
       "args": [
         "compose",
         "-f",
-        "/path/to/Local-MPC/docker-compose.yml",
+        "/path/to/privacy-mcp-router/docker-compose.yml",
         "run",
         "--rm",
         "-T",

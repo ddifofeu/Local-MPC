@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import orchestrator as orch
+from orchestrator.audit import AuditLog
 from conftest import FAKE_CLOUD_KEY
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -79,3 +80,60 @@ def test_verifier_accepts_real_log_and_flags_forged_tail(populated_audit, tmp_pa
     forged.write_text(audit_file.read_text() + json.dumps({"event": "decision", "prev": "genesis"}) + "\n")
     assert subprocess.run([sys.executable, VERIFIER, audit_file], capture_output=True).returncode == 0
     assert subprocess.run([sys.executable, VERIFIER, forged], capture_output=True).returncode == 2
+
+
+def verify(path):
+    return subprocess.run([sys.executable, VERIFIER, path], capture_output=True, text=True).returncode
+
+
+def write_records(path, count=6):
+    log = AuditLog(str(path))
+    for n in range(count):
+        log.emit("decision", n=n)
+
+
+def test_verifier_detects_records_removed_from_the_end(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    write_records(log)
+    assert verify(log) == 0
+    log.write_text("".join(log.read_text().splitlines(keepends=True)[:-2]))
+    assert verify(log) == 2
+
+
+def test_restart_on_a_shortened_log_leaves_a_permanent_record(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    write_records(log)
+    log.write_text("".join(log.read_text().splitlines(keepends=True)[:-2]))
+    AuditLog(str(log)).emit("startup")
+    assert '"event": "audit_anchor_mismatch"' in log.read_text()
+    assert verify(log) == 2
+
+
+def test_verifier_requires_the_anchor(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    write_records(log)
+    Path(f"{log}.anchor").unlink()
+    assert verify(log) == 2
+
+
+def test_two_open_writers_keep_one_chain(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    first, second = AuditLog(str(log)), AuditLog(str(log))
+    for n in range(4):
+        first.emit("decision", n=n)
+        second.emit("decision", n=n)
+    assert chain_breaks(log.read_text().splitlines()) == []
+    assert verify(log) == 0
+
+
+def test_concurrent_processes_keep_one_chain(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    code = ("import sys; from orchestrator.audit import AuditLog\n"
+            "log = AuditLog(sys.argv[1])\n"
+            "[log.emit('decision', n=n) for n in range(50)]\n")
+    procs = [subprocess.Popen([sys.executable, "-c", code, str(log)], cwd=ROOT, stderr=subprocess.DEVNULL)
+             for _ in range(4)]
+    assert [p.wait() for p in procs] == [0] * 4
+    lines = log.read_text().splitlines()
+    assert len(lines) == 200
+    assert verify(log) == 0

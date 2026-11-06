@@ -1,4 +1,7 @@
-"""I1: HIGH/CRITICAL tasks never reach the cloud, whatever the route, fallback or override."""
+"""I1: HIGH/CRITICAL tasks never reach the cloud, whatever the route, fallback or override.
+
+high_allows_cloud_fallback is the one setting that opens HIGH; CRITICAL stays closed.
+"""
 
 import time
 
@@ -71,3 +74,13 @@ async def test_without_cloud_key_low_task_goes_local(make):
     o, _ = make(cloud=False)
     r = await o.call("execute_task", {"task": "fix this bug in my loop"})
     assert r["execution"]["provider"] == "local_m5"
+
+
+async def test_opening_high_lets_it_reach_the_cloud_but_never_critical(make):
+    o, rec = make({"high_allows_cloud_fallback": True}, m5_up=False)
+    r = await o.call("execute_task", {"task": "internal infrastructure notes"})
+    assert r["execution"]["provider"] == "claude_api"
+    assert rec.sent == ["internal infrastructure notes"]
+    critical = await o.call("execute_task", {"task": "my password is Hunter2!", "override": "@claude"})
+    assert critical["code"] == "POLICY_VIOLATION"
+    assert len(rec.sent) == 1
